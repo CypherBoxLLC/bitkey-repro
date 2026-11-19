@@ -1,0 +1,57 @@
+# Runs Block's own verifiable-build scripts, unmodified, on an x86_64 GitHub runner.
+# Builds the EMERGENCY flavour (the only Android artefact Block publishes) and compares
+# it with the published signed APK after stripping signature + Play/stamp files.
+name: verify-bitkey-android
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: "Bitkey app version tag (e.g. 2026.17.0)"
+        required: true
+        default: "2026.17.0"
+jobs:
+  reproduce:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 180
+    steps:
+      - name: Free runner disk
+        run: |
+          sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc /opt/hostedtoolcache/CodeQL /usr/local/.ghcup || true
+          docker system prune -af >/dev/null 2>&1 || true
+          df -h / | tail -1
+      - name: Clone Bitkey at release tag
+        run: |
+          git clone --depth 1 --branch "app/${{ inputs.version }}" https://github.com/proto-at-block/bitkey.git bitkey
+          cd bitkey && git submodule update --init --recursive --depth 1
+          du -sh . && df -h / | tail -1
+      - name: Download release assets
+        run: |
+          mkdir release && cd release
+          gh release download "app/${{ inputs.version }}" --repo proto-at-block/bitkey
+          sha256sum -c ./*.sha256
+        env:
+          GH_TOKEN: ${{ github.token }}
+      - name: Build emergency APK with Block's script
+        run: |
+          cd bitkey
+          ANDROID_FLAVOR=emergency app/verifiable-build/android/release/build-android-release-apk . ../out-emergency "../release/build-variables-emergency-${{ inputs.version }}.json"
+          find ../out-emergency -name '*.apk' -exec sha256sum {} \;
+      - name: Compare with published APK
+        run: |
+          V="${{ inputs.version }}"
+          mkdir cmp && cd cmp
+          unzip -q "../release/Bitkey-app-$V.apk" -d published
+          unzip -q "$(find ../out-emergency -name 'app-emergency-unsigned.apk' | head -1)" -d rebuilt
+          for d in published rebuilt; do rm -rf "$d/META-INF/EMERGENC.RSA" "$d/META-INF/EMERGENC.SF" "$d/META-INF/MANIFEST.MF" "$d/stamp-cert-sha256" "$d/META-INF/BNDLTOOL."*; done
+          # Block's comparator would also drop AndroidManifest.xml; we keep it and report separately.
+          if diff -r -q published rebuilt > diff.txt; then echo "IDENTICAL (incl. AndroidManifest.xml)"; else echo "DIFFERENCES:"; cat diff.txt; fi
+          diff <(unzip -l "../release/Bitkey-app-$V.apk" | awk '{print $1, $4}' | sort) <(unzip -l "$(find ../out-emergency -name 'app-emergency-unsigned.apk' | head -1)" | awk '{print $1, $4}' | sort) > sizes.txt || true
+          echo "--- entry size/name diffs:"; head -50 sizes.txt
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: bitkey-${{ inputs.version }}-repro
+          path: |
+            out-emergency/**/*.apk
+            cmp/diff.txt
+            cmp/sizes.txt
