@@ -24,6 +24,10 @@ jobs:
           git clone --depth 1 --branch "app/${{ inputs.version }}" https://github.com/proto-at-block/bitkey.git bitkey
           cd bitkey && git submodule update --init --recursive --depth 1
           du -sh . && df -h / | tail -1
+      - name: Cap JVM memory for the 16 GB runner (output-neutral; last key wins in gradle.properties)
+        run: |
+          printf '\norg.gradle.jvmargs=-Xmx6g -XX:+UseParallelGC\nkotlin.daemon.jvmargs=-Xmx2g\norg.gradle.workers.max=2\n' >> bitkey/app/gradle.properties
+          tail -4 bitkey/app/gradle.properties
       - name: Download release assets
         run: |
           mkdir release && cd release
